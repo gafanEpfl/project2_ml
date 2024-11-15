@@ -38,4 +38,7 @@ Evaluation Metric:
 4. Cropping
 
 ### Other neural nets
-1. Find and try them
+1. Tweak a bit of CNN - default parameters are same as that of the class - play with them
+2. Play with the threshold
+3. Write code for generating submission file
+4. Write code for saving the plots
