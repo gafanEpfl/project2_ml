@@ -183,6 +183,9 @@ def train_model():
     # Shuffle the indices
     indices = np.random.permutation(num_samples)
     train_idx, val_idx = indices[num_val_samples:], indices[:num_val_samples]
+
+    # Augment the data
+    # Think of the ways of doing it
     
     # Split the data
     x_train, x_val = train_data[train_idx], train_data[val_idx]
