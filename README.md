@@ -30,3 +30,12 @@ prediction task.
 
 Evaluation Metric:
  [F1 score](https://en.wikipedia.org/wiki/F1_score)
+
+### Data Augmentation
+1. Brightness
+2. Contrast
+3. Rotation
+4. Cropping
+
+### Other neural nets
+1. Find and try them
