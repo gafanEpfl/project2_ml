@@ -3,10 +3,13 @@ import numpy as np
 import matplotlib.image as mpimg
 from PIL import Image
 import os
+import shutil
 import sys
-from tensorflow.keras import layers, Model
+# from tensorflow.keras import layers, Model
+from keras import layers, Model
 import pathlib
 from plot import *
+import albumentations as A
 
 # Constants (keep your existing constants)
 TRAINING_SIZE = 100
@@ -32,6 +35,8 @@ def img_crop(im, w, h):
 def extract_data(filename, num_images, patch_size):
     """Extract the images into a 4D tensor [image index, y, x, channels]."""
     imgs = []
+    ws = []
+    hs = []
     for i in range(1, num_images + 1):
         imageid = "satImage_%.3d" % i
         image_filename = filename + imageid + ".png"
@@ -39,6 +44,8 @@ def extract_data(filename, num_images, patch_size):
             print("Loading " + image_filename)
             img = mpimg.imread(image_filename)
             imgs.append(img)
+            ws.append(img.shape[0])
+            hs.append(img.shape[1])
         else:
             print("File " + image_filename + " does not exist")
 
@@ -47,12 +54,34 @@ def extract_data(filename, num_images, patch_size):
     img_patches = [img_crop(imgs[i], patch_size, patch_size) for i in range(num_images)]
     data = [img_patches[i][j] for i in range(len(img_patches)) for j in range(len(img_patches[i]))]
     
-    return np.asarray(data)
+    return (np.asarray(data), ws, hs)
+
+# Since the test directory has a directory for each image
+# we need to move the images inside the test directory
+# and remove the subdirectories
+def extract_output_data(image_filename, patch_size):
+    """Extract the images into a 3D tensor [y, x, channels]."""
+    imgs = []
+    # image_filename = subdir_name + "test_" + str(i) + ".png"
+    if os.path.isfile(image_filename):
+        print("Loading " + image_filename)
+        img = mpimg.imread(image_filename)
+        imgs.append(img)
+        print(img.shape, "jgcuihdcihcoi")
+    else:
+        print("File " + image_filename + " does not exist")
+
+    num_images = len(imgs)
+    
+    img_patches = [img_crop(imgs[0], patch_size, patch_size) for i in range(num_images)]
+    data = [img_patches[i][j] for i in range(len(img_patches)) for j in range(len(img_patches[i]))]
+    
+    return np.array(data)
 
 def value_to_class_cnn(v):
     """Assign a label to a patch."""
     foreground_threshold = 0.25
-    df = np.sum(v)
+    df = np.mean(v)
     return [0, 1] if df > foreground_threshold else [1, 0]
 
 def extract_labels_cnn(filename, num_images, patch_size):
@@ -129,7 +158,7 @@ class RoadSegmentationModel(tf.keras.Model):
         self.bn3 = layers.BatchNormalization()
         self.act3 = layers.ReLU()
         self.dropout = layers.Dropout(0.5)
-        self.fc2 = layers.Dense(NUM_LABELS)
+        self.fc2 = layers.Dense(NUM_LABELS, activation='sigmoid')
         
     def call(self, x, training=False):
         x = self.conv1(x)
@@ -150,6 +179,46 @@ class RoadSegmentationModel(tf.keras.Model):
             x = self.dropout(x)
         return self.fc2(x)
 
+def augment_data(x_train, x_val, mask_train, mask_val, y_train, y_val, num_augments=5):
+    transform = A.Compose([
+        A.RandomRotate90(p=0.5),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.RandomBrightnessContrast(p=0.2),
+        A.Resize(256, 256),
+        A.ElasticTransform(p=0.3),
+        A.HueSaturationValue(p=0.3),
+        A.GaussianBlur(p=0.2)
+    ])
+
+    whole_x_train_set = []
+    whole_x_val_set = []
+    whole_mask_train_set = []
+    whole_mask_val_set = []
+    whole_y_train_set = []
+    whole_y_val_set = []
+
+    for img, mask, y in zip(x_train, mask_train, y_train):
+        whole_x_train_set.append(img)
+        whole_mask_train_set.append(mask)
+        whole_y_train_set.append(y)
+        print(img.shape, mask.shape)
+        for i in range(num_augments):
+            augmented = transform(image=img, mask=mask)
+            whole_x_train_set.append(augmented['image'])
+            whole_mask_train_set.append(augmented['mask'])
+
+    for img, mask, y in zip(x_val, mask_val, y_val):
+        whole_x_val_set.append(img)
+        whole_mask_val_set.append(mask)
+        whole_y_val_set.append(y)
+        for i in range(num_augments):
+            augmented = transform(image=img, mask=mask)
+            whole_x_val_set.append(augmented['image'])
+            whole_mask_val_set.append(augmented['mask'])
+    
+    return whole_x_train_set, whole_x_val_set, whole_y_train_set, whole_y_val_set
+
 def train_model():
     # Create checkpoint directory if it doesn't exist
     checkpoint_dir = "checkpoints"
@@ -158,7 +227,8 @@ def train_model():
     
     # Prepare data using your helper functions
     data_dir = "training/"
-    train_data = extract_data(data_dir + "images/", TRAINING_SIZE, IMG_PATCH_SIZE)
+    train_data, _, _ = extract_data(data_dir + "images/", TRAINING_SIZE, IMG_PATCH_SIZE)
+    train_mask, _, _ = extract_data(data_dir + "groundtruth/", TRAINING_SIZE, IMG_PATCH_SIZE)
     train_labels = extract_labels_cnn(data_dir + "groundtruth/", TRAINING_SIZE, IMG_PATCH_SIZE)
     
     # Balance dataset
@@ -173,6 +243,7 @@ def train_model():
     new_indices = idx0[:min_c] + idx1[:min_c]
     
     train_data = train_data[new_indices]
+    train_mask = train_mask[new_indices]
     train_labels = train_labels[new_indices]
     
     # Manually split the data into training and validation sets
@@ -183,22 +254,46 @@ def train_model():
     # Shuffle the indices
     indices = np.random.permutation(num_samples)
     train_idx, val_idx = indices[num_val_samples:], indices[:num_val_samples]
-
-    # Augment the data
-    # Think of the ways of doing it
     
     # Split the data
     x_train, x_val = train_data[train_idx], train_data[val_idx]
     y_train, y_val = train_labels[train_idx], train_labels[val_idx]
+    mask_train, mask_val = train_mask[train_idx], train_mask[val_idx]
+
+    # (
+    #     whole_x_train,
+    #     whole_x_val,
+    #     whole_y_train,
+    #     whole_y_val
+    # ) = augment_data(
+    #     x_train=x_train,
+    #     x_val=x_val,
+    #     mask_train=mask_train,
+    #     mask_val=mask_val,
+    #     y_train=y_train,
+    #     y_val=y_val
+    # )
+
+    (
+        whole_x_train,
+        whole_x_val,
+        whole_y_train,
+        whole_y_val
+    ) = (
+        x_train,
+        x_val,
+        y_train,
+        y_val
+    )
     
     # Create training dataset
-    train_dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+    train_dataset = tf.data.Dataset.from_tensor_slices((whole_x_train, whole_y_train))
     train_dataset = train_dataset.shuffle(buffer_size=1000)
     train_dataset = train_dataset.batch(BATCH_SIZE)
     train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
     
     # Create validation dataset
-    val_dataset = tf.data.Dataset.from_tensor_slices((x_val, y_val))
+    val_dataset = tf.data.Dataset.from_tensor_slices((whole_x_val, whole_y_val))
     val_dataset = val_dataset.batch(BATCH_SIZE)
     val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
     

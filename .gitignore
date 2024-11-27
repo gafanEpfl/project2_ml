@@ -1,0 +1,11 @@
+*.zip
+training/*
+all/*
+.DS_Store
+__pycache__/*
+checkpoints/*
+logs/*
+predictions_training/*
+plots/*
+test/*
+test_set_images/*
